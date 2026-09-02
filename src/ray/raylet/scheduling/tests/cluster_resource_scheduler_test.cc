@@ -2095,6 +2095,55 @@ TEST_F(ClusterResourceSchedulerTest, LabelSelectorHardNodeAffinityTest) {
   }
 }
 
+TEST_F(ClusterResourceSchedulerTest, RetrySoftlyExcludesPreviousNode) {
+  instrumented_io_context io_context;
+  auto local_node_id = scheduling::NodeID(NodeID::FromRandom().Binary());
+  ClusterResourceScheduler resource_scheduler(PeriodicalRunner::Create(io_context),
+                                              local_node_id,
+                                              {{"CPU", 0}},
+                                              is_node_available_fn_,
+                                              fake_gauge_,
+                                              clock_);
+
+  const NodeID failed_node_id = NodeID::FromRandom();
+  const NodeID alternative_node_id = NodeID::FromRandom();
+  const scheduling::NodeID failed_node(failed_node_id.Binary());
+  const scheduling::NodeID alternative_node(alternative_node_id.Binary());
+  const NodeResources one_cpu = CreateNodeResources({{scheduling::ResourceID::CPU(), 1}});
+  resource_scheduler.GetClusterResourceManager().AddOrUpdateNode(failed_node, one_cpu);
+  resource_scheduler.GetClusterResourceManager().AddOrUpdateNode(alternative_node,
+                                                                 one_cpu);
+  resource_scheduler.GetClusterResourceManager().SetNodeLabels(
+      failed_node, {{kLabelKeyNodeID, failed_node_id.Hex()}});
+  resource_scheduler.GetClusterResourceManager().SetNodeLabels(
+      alternative_node, {{kLabelKeyNodeID, alternative_node_id.Hex()}});
+
+  rpc::TaskSpec task_spec;
+  task_spec.set_type(TaskType::NORMAL_TASK);
+  task_spec.mutable_required_resources()->insert({"CPU", 1});
+  task_spec.mutable_scheduling_strategy()->mutable_default_scheduling_strategy();
+  task_spec.set_retry_excluded_node_id(failed_node_id.Binary());
+  LeaseSpecification lease_spec(task_spec);
+  task_spec.clear_retry_excluded_node_id();
+  LeaseSpecification original_lease_spec(task_spec);
+  EXPECT_EQ(lease_spec.GetSchedulingClass(), original_lease_spec.GetSchedulingClass());
+
+  bool is_infeasible = false;
+  EXPECT_EQ(resource_scheduler.GetBestSchedulableNode(
+                lease_spec, "", false, false, &is_infeasible),
+            alternative_node);
+  EXPECT_FALSE(is_infeasible);
+
+  // If the alternative is feasible but currently busy, the original node
+  // remains immediately eligible through the generated fallback selector.
+  resource_scheduler.GetClusterResourceManager().AddOrUpdateNode(
+      alternative_node, {{"CPU", 1}}, {{"CPU", 0}});
+  EXPECT_EQ(resource_scheduler.GetBestSchedulableNode(
+                lease_spec, "", false, false, &is_infeasible),
+            failed_node);
+  EXPECT_FALSE(is_infeasible);
+}
+
 TEST_F(ClusterResourceSchedulerTest, ScheduleWithFallbackStrategyTest) {
   // Setup scheduler with two nodes with resources and unique labels.
   auto local_node_id = scheduling::NodeID(NodeID::FromRandom().Binary());

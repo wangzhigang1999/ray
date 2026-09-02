@@ -31,6 +31,17 @@
 namespace ray {
 namespace core {
 
+namespace {
+
+SchedulingKey GetSchedulingKey(const TaskSpecification &task_spec) {
+  return {task_spec.GetSchedulingClass(),
+          task_spec.GetDependencyIds(),
+          task_spec.GetRuntimeEnvHash(),
+          task_spec.GetMessage().retry_excluded_node_id()};
+}
+
+}  // namespace
+
 void NormalTaskSubmitter::SubmitTask(TaskSpecification task_spec) {
   RAY_CHECK(task_spec.IsNormalTask());
   RAY_LOG(DEBUG) << "Submit task " << task_spec.TaskId();
@@ -64,9 +75,7 @@ void NormalTaskSubmitter::SubmitTask(TaskSpecification task_spec) {
         clock_.NowUnixMillis());
     // Note that the dependencies in the task spec are mutated to only contain
     // plasma dependencies after ResolveDependencies finishes.
-    const SchedulingKey scheduling_key(task_spec.GetSchedulingClass(),
-                                       task_spec.GetDependencyIds(),
-                                       task_spec.GetRuntimeEnvHash());
+    const SchedulingKey scheduling_key = GetSchedulingKey(task_spec);
     auto &scheduling_key_entry = scheduling_key_entries_[scheduling_key];
     if (!scheduling_key_entry.lease_spec.has_value()) {
       scheduling_key_entry.lease_spec = LeaseSpecification(task_spec.GetMessage());
@@ -669,9 +678,7 @@ void NormalTaskSubmitter::CancelTask(TaskSpecification task_spec,
   const auto task_id = task_spec.TaskId();
   RAY_LOG(INFO) << "Cancelling a task: " << task_id << " force_kill: " << force_kill
                 << " recursive: " << recursive;
-  SchedulingKey scheduling_key(task_spec.GetSchedulingClass(),
-                               task_spec.GetDependencyIds(),
-                               task_spec.GetRuntimeEnvHash());
+  SchedulingKey scheduling_key = GetSchedulingKey(task_spec);
 
   NodeID node_id;
   std::string executor_worker_id;

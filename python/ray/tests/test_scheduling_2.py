@@ -246,6 +246,60 @@ def test_placement_group_scheduling_strategy(ray_start_cluster):
         func.options(scheduling_strategy="XXX").remote()
 
 
+@pytest.mark.skipif(
+    platform.system() == "Windows", reason="Worker crash test uses os._exit()."
+)
+def test_retry_avoids_worker_crash_node(ray_start_cluster):
+    cluster = ray_start_cluster
+    cluster.add_node(num_cpus=0, resources={"control": 1})
+    cluster.add_node(num_cpus=1, resources={"retry_test_first": 1})
+    cluster.add_node(num_cpus=1, resources={"retry_test_second": 1})
+    ray.init(address=cluster.address)
+    cluster.wait_for_nodes()
+
+    nodes = ray.nodes()
+    first_node_id = next(
+        node["NodeID"]
+        for node in nodes
+        if node["Resources"].get("retry_test_first") == 1
+    )
+    second_node_id = next(
+        node["NodeID"]
+        for node in nodes
+        if node["Resources"].get("retry_test_second") == 1
+    )
+
+    @ray.remote(num_cpus=0, resources={"control": 0.01})
+    class AttemptRecorder:
+        def __init__(self):
+            self.nodes = []
+
+        def record(self, node_id):
+            self.nodes.append(node_id)
+            return len(self.nodes)
+
+        def get(self):
+            return self.nodes
+
+    @ray.remote(max_retries=1)
+    def crash_first_attempt(recorder):
+        node_id = ray.get_runtime_context().get_node_id()
+        attempt = ray.get(recorder.record.remote(node_id))
+        if attempt == 1:
+            os._exit(1)
+        return node_id
+
+    recorder = AttemptRecorder.remote()
+    result = ray.get(
+        crash_first_attempt.options(
+            scheduling_strategy=NodeAffinitySchedulingStrategy(first_node_id, soft=True)
+        ).remote(recorder)
+    )
+
+    assert ray.get(recorder.get.remote()) == [first_node_id, second_node_id]
+    assert result == second_node_id
+
+
 def test_node_affinity_scheduling_strategy(monkeypatch, ray_start_cluster):
     cluster = ray_start_cluster
     cluster.add_node(num_cpus=8, resources={"head": 1})

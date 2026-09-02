@@ -1577,6 +1577,16 @@ TEST(NormalTaskSubmitterSchedulingKeyTest, TestSchedulingKeys) {
                     BuildTaskSpec(resources1, descriptor1, 0, "b"),
                     BuildTaskSpec(resources1, descriptor1, 1, "a"));
 
+  // A retry hint separates the temporary lease request without changing the
+  // process-global scheduling class.
+  TaskSpecification regular = BuildTaskSpec(resources1, descriptor1);
+  rpc::TaskSpec retry_proto = regular.GetMessage();
+  retry_proto.set_retry_excluded_node_id(NodeID::FromRandom().Binary());
+  TaskSpecification retry(std::move(retry_proto));
+  ASSERT_EQ(regular.GetSchedulingClass(), retry.GetSchedulingClass());
+  RAY_LOG(INFO) << "Test retry exclusion";
+  TestSchedulingKey(memory_store, regular, BuildTaskSpec(resources1, descriptor1), retry);
+
   ObjectID direct1 = ObjectID::FromRandom();
   ObjectID direct2 = ObjectID::FromRandom();
   ObjectID plasma1 = ObjectID::FromRandom();

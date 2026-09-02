@@ -15,9 +15,12 @@
 #include "ray/raylet/scheduling/cluster_resource_scheduler.h"
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
+
+#include "ray/common/scheduling/fallback_strategy.h"
 
 namespace ray {
 
@@ -304,12 +307,27 @@ scheduling::NodeID ClusterResourceScheduler::GetBestSchedulableNode(
   // This argument is used to set violation, which is an unsupported feature now.
   int64_t _unused;
 
-  // Construct list of references to all LabelSelectors, from both the `label_selector`
-  // and `fallback_strategy` arguments.
+  const LabelSelector *primary_selector = &lease_spec.GetLabelSelector();
+  const std::vector<FallbackOption> *fallback_strategy =
+      &lease_spec.GetFallbackStrategy();
+  std::optional<LabelSelector> retry_primary_selector;
+  std::optional<std::vector<FallbackOption>> retry_fallback_strategy;
+  const auto &retry_excluded_node_id = lease_spec.GetMessage().retry_excluded_node_id();
+  if (!retry_excluded_node_id.empty()) {
+    retry_primary_selector = *primary_selector;
+    retry_fallback_strategy = *fallback_strategy;
+    ApplySoftNodeExclusion(NodeID::FromBinary(retry_excluded_node_id).Hex(),
+                           &*retry_primary_selector,
+                           &*retry_fallback_strategy);
+    primary_selector = &*retry_primary_selector;
+    fallback_strategy = &*retry_fallback_strategy;
+  }
+
+  // Construct list of references to all LabelSelectors, including temporary retry
+  // preferences and the original fallbacks.
   std::vector<std::reference_wrapper<const LabelSelector>> label_selectors;
-  label_selectors.push_back(std::cref(lease_spec.GetLabelSelector()));
-  const auto &fallback_strategy = lease_spec.GetFallbackStrategy();
-  for (const auto &fallback : fallback_strategy) {
+  label_selectors.push_back(std::cref(*primary_selector));
+  for (const auto &fallback : *fallback_strategy) {
     label_selectors.push_back(std::cref(fallback.label_selector));
   }
 

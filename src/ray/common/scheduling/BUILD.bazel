@@ -119,6 +119,7 @@ ray_cc_library(
     hdrs = ["fallback_strategy.h"],
     deps = [
         ":label_selector",
+        "//src/ray/common:constants",
         "//src/ray/protobuf:common_cc_proto",
         "//src/ray/util:logging",
         "@com_google_absl//absl/hash",

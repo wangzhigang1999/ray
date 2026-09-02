@@ -212,6 +212,7 @@ class TaskManagerTest : public ::testing::Test {
             [this](TaskSpecification &spec, uint32_t delay_ms) {
               num_retries_++;
               last_delay_ms_ = delay_ms;
+              last_retry_spec_.CopyFrom(spec.GetMessage());
             },
             [this](const TaskSpecification &spec) {
               return this->did_queue_generator_resubmit_;
@@ -310,6 +311,7 @@ class TaskManagerTest : public ::testing::Test {
   TaskManager manager_;
   int num_retries_ = 0;
   uint32_t last_delay_ms_ = 0;
+  rpc::TaskSpec last_retry_spec_;
   std::unordered_set<ObjectID> stored_in_plasma;
   std::vector<std::pair<ObjectID, absl::flat_hash_set<NodeID>>> freed_objects_;
   // Error type recorded when put_in_local_plasma_callback_ receives an
@@ -5232,6 +5234,86 @@ TEST_F(TaskManagerTest, TestTaskRetriedOnNodePreemption) {
 
   // Cleanup
   manager_.FailPendingTask(spec.TaskId(), rpc::ErrorType::WORKER_DIED);
+}
+
+TEST_F(TaskManagerTest, TestSystemFailureRetrySoftlyExcludesPreviousNode) {
+  rpc::Address caller_address;
+  auto spec = CreateTaskHelper(1, {});
+  constexpr int kNumRetries = 2;
+  manager_.AddPendingTask(caller_address, spec, "", kNumRetries);
+
+  const NodeID failed_node_id = NodeID::FromRandom();
+  manager_.MarkDependenciesResolved(spec.TaskId());
+  manager_.MarkTaskWaitingForExecution(
+      spec.TaskId(), failed_node_id, WorkerID::FromRandom());
+
+  rpc::RayErrorInfo worker_died_error;
+  worker_died_error.set_error_type(rpc::ErrorType::WORKER_DIED);
+  ASSERT_TRUE(manager_.RetryTaskIfPossible(spec.TaskId(), worker_died_error));
+  ASSERT_EQ(last_retry_spec_.retry_excluded_node_id(), failed_node_id.Binary());
+
+  // An application failure on the next attempt must not retain the old node
+  // exclusion, since the failure is not evidence about that node.
+  manager_.MarkDependenciesResolved(spec.TaskId());
+  manager_.MarkTaskWaitingForExecution(
+      spec.TaskId(), NodeID::FromRandom(), WorkerID::FromRandom());
+  rpc::RayErrorInfo application_error;
+  application_error.set_error_type(rpc::ErrorType::TASK_EXECUTION_EXCEPTION);
+  ASSERT_TRUE(manager_.RetryTaskIfPossible(spec.TaskId(), application_error));
+  EXPECT_TRUE(last_retry_spec_.retry_excluded_node_id().empty());
+
+  manager_.FailPendingTask(spec.TaskId(), rpc::ErrorType::WORKER_DIED);
+}
+
+TEST_F(TaskManagerTest, TestNodeDiedRetrySoftlyExcludesPreviousNode) {
+  rpc::Address caller_address;
+  auto spec = CreateTaskHelper(1, {});
+  manager_.AddPendingTask(caller_address, spec, "", /*max_retries=*/1);
+
+  const NodeID failed_node_id = NodeID::FromRandom();
+  manager_.MarkDependenciesResolved(spec.TaskId());
+  manager_.MarkTaskWaitingForExecution(
+      spec.TaskId(), failed_node_id, WorkerID::FromRandom());
+
+  rpc::RayErrorInfo node_died_error;
+  node_died_error.set_error_type(rpc::ErrorType::NODE_DIED);
+  ASSERT_TRUE(manager_.RetryTaskIfPossible(spec.TaskId(), node_died_error));
+  EXPECT_EQ(last_retry_spec_.retry_excluded_node_id(), failed_node_id.Binary());
+
+  manager_.FailPendingTask(spec.TaskId(), rpc::ErrorType::WORKER_DIED);
+}
+
+TEST_F(TaskManagerTest, TestCompletedRetryDoesNotRetainNodeExclusionInLineage) {
+  rpc::Address caller_address;
+  auto spec = CreateTaskHelper(1, {});
+  constexpr int kNumRetries = 3;
+  manager_.AddPendingTask(caller_address, spec, "", kNumRetries);
+
+  manager_.MarkDependenciesResolved(spec.TaskId());
+  manager_.MarkTaskWaitingForExecution(
+      spec.TaskId(), NodeID::FromRandom(), WorkerID::FromRandom());
+  rpc::RayErrorInfo worker_died_error;
+  worker_died_error.set_error_type(rpc::ErrorType::WORKER_DIED);
+  ASSERT_TRUE(manager_.RetryTaskIfPossible(spec.TaskId(), worker_died_error));
+  ASSERT_FALSE(last_retry_spec_.retry_excluded_node_id().empty());
+
+  manager_.MarkDependenciesResolved(spec.TaskId());
+  manager_.MarkTaskWaitingForExecution(
+      spec.TaskId(), NodeID::FromRandom(), WorkerID::FromRandom());
+  rpc::PushTaskReply reply;
+  auto *return_object = reply.add_return_objects();
+  const ObjectID return_id = spec.ReturnId(0);
+  return_object->set_object_id(return_id.Binary());
+  return_object->set_in_plasma(true);
+  manager_.CompletePendingTask(spec.TaskId(), reply, rpc::Address(), false);
+  ASSERT_TRUE(manager_.IsTaskSubmissible(spec.TaskId()));
+
+  std::vector<ObjectID> task_deps;
+  ASSERT_EQ(manager_.ResubmitTask(spec.TaskId(), &task_deps), std::nullopt);
+  EXPECT_TRUE(last_retry_spec_.retry_excluded_node_id().empty());
+
+  reference_counter_->RemoveLocalReference(return_id, nullptr);
+  manager_.CompletePendingTask(spec.TaskId(), reply, rpc::Address(), false);
 }
 
 class PlasmaShutdownRaceTest : public ::testing::Test {

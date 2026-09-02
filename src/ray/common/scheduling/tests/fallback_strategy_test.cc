@@ -17,6 +17,7 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
@@ -24,6 +25,23 @@
 #include "src/ray/protobuf/common.pb.h"
 
 namespace ray {
+
+namespace {
+
+bool HasConstraint(const LabelSelector &selector,
+                   const std::string &key,
+                   LabelSelectorOperator op,
+                   const std::string &value) {
+  for (const auto &constraint : selector.GetConstraints()) {
+    if (constraint.GetLabelKey() == key && constraint.GetOperator() == op &&
+        constraint.GetLabelValues().contains(value)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+}  // namespace
 
 TEST(FallbackStrategyTest, OptionsConstructionAndEquality) {
   auto selector_a =
@@ -118,6 +136,75 @@ TEST(FallbackStrategyTest, EmptyFallbackStrategy) {
 
   auto serialized_proto = SerializeFallbackStrategy(*parsed_list);
   EXPECT_EQ(serialized_proto.options_size(), 0);
+}
+
+TEST(FallbackStrategyTest, SoftNodeExclusionPreservesSelectorPriority) {
+  const std::string failed_node_id = "failed-node";
+  LabelSelector primary(std::map<std::string, std::string>{{"region", "east"}});
+  std::vector<FallbackOption> fallbacks = {FallbackOption(
+      LabelSelector(std::map<std::string, std::string>{{"region", "west"}}))};
+
+  ApplySoftNodeExclusion(failed_node_id, &primary, &fallbacks);
+
+  EXPECT_EQ(primary.ToStringMap().at("region"), "east");
+  EXPECT_TRUE(HasConstraint(
+      primary, kLabelKeyNodeID, LabelSelectorOperator::LABEL_NOT_IN, failed_node_id));
+  ASSERT_EQ(fallbacks.size(), 3);
+
+  // Retry the original primary tier before considering the user's lower-priority
+  // fallback tier.
+  EXPECT_EQ(fallbacks[0].label_selector.ToStringMap().at("region"), "east");
+  EXPECT_FALSE(HasConstraint(fallbacks[0].label_selector,
+                             kLabelKeyNodeID,
+                             LabelSelectorOperator::LABEL_NOT_IN,
+                             failed_node_id));
+  EXPECT_EQ(fallbacks[1].label_selector.ToStringMap().at("region"), "west");
+  EXPECT_TRUE(HasConstraint(fallbacks[1].label_selector,
+                            kLabelKeyNodeID,
+                            LabelSelectorOperator::LABEL_NOT_IN,
+                            failed_node_id));
+  EXPECT_EQ(fallbacks[2].label_selector.ToStringMap().at("region"), "west");
+  EXPECT_FALSE(HasConstraint(fallbacks[2].label_selector,
+                             kLabelKeyNodeID,
+                             LabelSelectorOperator::LABEL_NOT_IN,
+                             failed_node_id));
+}
+
+TEST(FallbackStrategyTest, SoftNodeExclusionFallsBackToHardPinnedNode) {
+  const std::string failed_node_id = "failed-node";
+  LabelSelector primary;
+  primary.AddConstraint(LabelConstraint(
+      kLabelKeyNodeID, LabelSelectorOperator::LABEL_IN, {failed_node_id}));
+  std::vector<FallbackOption> fallbacks;
+
+  ApplySoftNodeExclusion(failed_node_id, &primary, &fallbacks);
+
+  EXPECT_TRUE(HasConstraint(
+      primary, kLabelKeyNodeID, LabelSelectorOperator::LABEL_IN, failed_node_id));
+  EXPECT_TRUE(HasConstraint(
+      primary, kLabelKeyNodeID, LabelSelectorOperator::LABEL_NOT_IN, failed_node_id));
+  ASSERT_EQ(fallbacks.size(), 1);
+  EXPECT_TRUE(HasConstraint(fallbacks[0].label_selector,
+                            kLabelKeyNodeID,
+                            LabelSelectorOperator::LABEL_IN,
+                            failed_node_id));
+  EXPECT_FALSE(HasConstraint(fallbacks[0].label_selector,
+                             kLabelKeyNodeID,
+                             LabelSelectorOperator::LABEL_NOT_IN,
+                             failed_node_id));
+}
+
+TEST(FallbackStrategyTest, SoftNodeExclusionDoesNotDuplicateExistingExclusion) {
+  const std::string failed_node_id = "failed-node";
+  LabelSelector primary;
+  primary.AddConstraint(LabelConstraint(
+      kLabelKeyNodeID, LabelSelectorOperator::LABEL_NOT_IN, {failed_node_id}));
+  std::vector<FallbackOption> fallbacks;
+
+  ApplySoftNodeExclusion(failed_node_id, &primary, &fallbacks);
+
+  EXPECT_EQ(primary.GetConstraints().size(), 1);
+  EXPECT_TRUE(fallbacks.empty());
 }
 
 }  // namespace ray

@@ -60,4 +60,15 @@ std::shared_ptr<std::vector<FallbackOption>> ParseFallbackStrategy(
 rpc::FallbackStrategy SerializeFallbackStrategy(
     const std::vector<FallbackOption> &strategy_list);
 
+/// Prefer nodes other than `excluded_node_id` without making the exclusion a
+/// hard scheduling constraint.
+///
+/// Each existing selector tier is expanded from `S` to `S && node != excluded,
+/// S`. This preserves the user's selector and fallback priority while trying a
+/// different failure domain first. Selectors that already cannot match the
+/// excluded node are left unchanged.
+void ApplySoftNodeExclusion(const std::string &excluded_node_id,
+                            LabelSelector *primary,
+                            std::vector<FallbackOption> *fallbacks);
+
 }  // namespace ray
