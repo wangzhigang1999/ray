@@ -50,7 +50,11 @@ namespace core {
 // task if the worker's RuntimeEnvHash matches the RuntimeEnvHash required by the task
 // spec.
 using RuntimeEnvHash = int;
-using SchedulingKey = std::tuple<SchedulingClass, std::vector<ObjectID>, RuntimeEnvHash>;
+// The retry exclusion keeps an attempt out of the failed node's worker/lease pool. The
+// entry is removed after its tasks and leases drain; the process-global SchedulingClass
+// remains unchanged.
+using SchedulingKey =
+    std::tuple<SchedulingClass, std::vector<ObjectID>, RuntimeEnvHash, std::string>;
 
 // Interface that controls the max concurrent pending lease requests
 // per scheduling category.

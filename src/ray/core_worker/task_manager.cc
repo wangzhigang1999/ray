@@ -41,6 +41,15 @@ constexpr int64_t kTaskFailureLoggingFrequencyMillis = 5000;
 
 namespace {
 
+bool ShouldSoftAvoidPreviousNode(const TaskSpecification &task_spec,
+                                 const rpc::RayErrorInfo &error_info,
+                                 const NodeID &previous_node_id) {
+  const auto error_type = error_info.error_type();
+  return !task_spec.IsActorTask() && !previous_node_id.IsNil() &&
+         (error_type == rpc::ErrorType::WORKER_DIED ||
+          error_type == rpc::ErrorType::NODE_DIED);
+}
+
 rpc::ErrorType MapPlasmaPutStatusToErrorType(const Status &status) {
   // Only the following should be returned from plasma put paths today.
   RAY_DCHECK(status.IsObjectStoreFull() || status.IsTransientObjectStoreFull() ||
@@ -1394,6 +1403,16 @@ void TaskManager::CompletePendingTask(const TaskID &task_id,
     }
     num_pending_tasks_--;
 
+    // The exclusion only describes the transition between two attempts. Once
+    // this attempt has completed, do not retain it in lineage and accidentally
+    // apply it to a future object reconstruction.
+    if (!it->second.spec_.GetMessage().retry_excluded_node_id().empty()) {
+      rpc::TaskSpec completed_spec = it->second.spec_.GetMessage();
+      completed_spec.clear_retry_excluded_node_id();
+      it->second.spec_ = TaskSpecification(std::move(completed_spec));
+      spec = it->second.spec_;
+    }
+
     // A finished task can only be re-executed if it has some number of
     // retries left and returned at least one object that is still in use and
     // stored in plasma.
@@ -1551,6 +1570,20 @@ bool TaskManager::RetryTaskIfPossible(const TaskID &task_id,
                     /* state_update */ std::nullopt,
                     /* include_task_info */ true,
                     task_entry.spec_.AttemptNumber() + 1);
+
+      // A worker or node failure can be local to its failure domain. Prefer a
+      // different node for the next attempt, but let the scheduler fall back to
+      // the original constraints if no alternative is feasible. Application
+      // errors and OOM retries keep their original scheduling behavior.
+      rpc::TaskSpec retry_spec = task_entry.spec_.GetMessage();
+      if (ShouldSoftAvoidPreviousNode(
+              task_entry.spec_, error_info, task_entry.GetNodeId())) {
+        retry_spec.set_retry_excluded_node_id(task_entry.GetNodeId().Binary());
+      } else {
+        retry_spec.clear_retry_excluded_node_id();
+      }
+      task_entry.spec_ = TaskSpecification(std::move(retry_spec));
+      spec = task_entry.spec_;
     }
     std::string num_retries_left_str =
         num_retries_left == -1 ? "infinite" : std::to_string(num_retries_left);

@@ -503,6 +503,10 @@ message LeaseSpec {
   uint64 attempt_number = 21;
   string task_name = 22;
   FallbackStrategy fallback_strategy = 23;
+  // A per-attempt scheduling hint. The scheduler prefers another feasible node,
+  // then falls back to the original constraints. This is not part of the
+  // process-global scheduling class.
+  bytes retry_excluded_node_id = 24;
 }
 
 /// The task specification encapsulates all immutable information about the
@@ -629,6 +633,11 @@ message TaskSpec {
   // Private streaming generator option. The number of ObjectRefs produced by
   // each generator yield. Defaults to 1.
   uint64 num_objects_per_yield = 46;
+  // The node used by the previous failed attempt. On retry, Ray uses this to
+  // prefer another feasible node while preserving the original scheduling
+  // constraints as a fallback. This is internal retry state, not a user option or
+  // part of the process-global scheduling class.
+  bytes retry_excluded_node_id = 47;
 }
 
 message TaskInfoEntry {

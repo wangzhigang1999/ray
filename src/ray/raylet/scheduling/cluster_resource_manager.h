@@ -238,6 +238,7 @@ class ClusterResourceManager {
   FRIEND_TEST(ClusterResourceSchedulerTest, AffinityWithBundleScheduleTest);
   FRIEND_TEST(ClusterResourceSchedulerTest, LabelSelectorIsSchedulableOnNodeTest);
   FRIEND_TEST(ClusterResourceSchedulerTest, LabelSelectorHardNodeAffinityTest);
+  FRIEND_TEST(ClusterResourceSchedulerTest, RetrySoftlyExcludesPreviousNode);
   FRIEND_TEST(ClusterResourceSchedulerTest, ScheduleWithFallbackStrategyTest);
   FRIEND_TEST(ClusterResourceSchedulerTest, FallbackStrategyWithUnavailableNodesTest);
   FRIEND_TEST(ClusterResourceSchedulerTest,

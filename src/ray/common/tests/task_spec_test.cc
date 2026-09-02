@@ -187,6 +187,22 @@ TEST(TaskSpecTest, TestActorSchedulingClass) {
   ASSERT_EQ(regular_task.GetSchedulingClass(), actor_task.GetSchedulingClass());
 }
 
+TEST(TaskSpecTest, TestRetryNodeExclusionDoesNotChangeSchedulingClass) {
+  rpc::TaskSpec task_spec_proto;
+  task_spec_proto.set_type(TaskType::NORMAL_TASK);
+  task_spec_proto.mutable_required_resources()->insert({"CPU", 1});
+
+  TaskSpecification original_task(task_spec_proto);
+
+  const NodeID failed_node_id = NodeID::FromRandom();
+  task_spec_proto.set_retry_excluded_node_id(failed_node_id.Binary());
+  TaskSpecification retry_task(task_spec_proto);
+
+  EXPECT_EQ(original_task.GetSchedulingClass(), retry_task.GetSchedulingClass());
+  EXPECT_TRUE(retry_task.GetLabelSelector().GetConstraints().empty());
+  EXPECT_TRUE(retry_task.GetFallbackStrategy().empty());
+}
+
 TEST(TaskSpecTest, TestTaskSpecification) {
   rpc::SchedulingStrategy scheduling_strategy;
   NodeID node_id = NodeID::FromRandom();
